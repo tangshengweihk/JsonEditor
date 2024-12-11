@@ -736,6 +736,11 @@ window.addEventListener('error', event => {
 
 .scene-item:hover {
   background: #404040;
+  transform: translateY(-2px);
+}
+
+.scene-item:active {
+  transform: translateY(1px);
 }
 
 .scene-item.active {
