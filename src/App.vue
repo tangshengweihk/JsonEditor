@@ -67,7 +67,7 @@ const cancelDataEdit = () => {
   tempEditData.value = {}
 }
 
-// 添加数据的方法
+// 修改添加数据的方法
 const addData = () => {
   if (newDataKey.value && newDataValue.value) {
     // 检查键名是否已存在
@@ -82,26 +82,15 @@ const addData = () => {
     }
     tempEditData.value[newDataKey.value] = newDataValue.value
 
-    // 自动添加为预设值
+    // 暂存预设值，但不立即保存到服务器
     if (!presets.value[activeScene.value]) {
       presets.value[activeScene.value] = {}
     }
     if (!presets.value[activeScene.value][newDataKey.value]) {
       presets.value[activeScene.value][newDataKey.value] = []
     }
-    // 如果预设值不存在，则添加
     if (!presets.value[activeScene.value][newDataKey.value].includes(newDataValue.value)) {
       presets.value[activeScene.value][newDataKey.value].unshift(newDataValue.value)
-      // 保存预设值
-      fetch('/api/presets', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(presets.value)
-      }).catch(error => {
-        console.error('保存预设值失败:', error)
-      })
     }
 
     newDataKey.value = ''
@@ -115,6 +104,16 @@ const saveDataEdit = async () => {
     // 将临时数据保存到实际数据中
     sceneData.value[activeScene.value] = { ...tempEditData.value }
     await saveToFile()
+    
+    // 保存预设值
+    await fetch('/api/presets', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(presets.value)
+    })
+    
     isDataEditMode.value = false
   } catch (error) {
     console.error('保存数据编辑失败:', error)
@@ -122,8 +121,27 @@ const saveDataEdit = async () => {
 }
 
 // 修改删除数据的方法
-const deleteDataAndPreset = (key: string) => {
+const deleteDataAndPreset = async (key: string) => {
+  // 删除临时数据中的键
   delete tempEditData.value[key]
+  
+  // 删除预设中的对应键
+  if (presets.value[activeScene.value] && presets.value[activeScene.value][key]) {
+    const newPresets = { ...presets.value }
+    delete newPresets[activeScene.value][key]
+    presets.value = newPresets
+
+    // 保存更新后的预设到服务器
+    await fetch('/api/presets', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(presets.value)
+    }).catch(error => {
+      console.error('保存预设值失败:', error)
+    })
+  }
 }
 
 // 修改场景名称处理方法
@@ -209,7 +227,7 @@ watch([isSceneEditMode, isDataEditMode], async ([newSceneMode, newDataMode], [ol
 })
 
 // 修改确认删除场景的方法
-const confirmDelete = (scene: string) => {
+const confirmDelete = async (scene: string) => {
   const index = scenes.value.indexOf(scene)
   if (index !== -1) {
     scenes.value.splice(index, 1)
@@ -218,10 +236,25 @@ const confirmDelete = (scene: string) => {
     delete newData[scene]
     sceneData.value = newData
     
+    // 删除预设数据
+    const newPresets = { ...presets.value }
+    delete newPresets[scene]
+    presets.value = newPresets
+
+    // 保存预设数据到服务器
+    await fetch('/api/presets', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(presets.value)
+    }).catch(error => {
+      console.error('保存预设值失败:', error)
+    })
+    
     if (activeScene.value === scene) {
       activeScene.value = scenes.value[0] || ''
     }
-    // 移除立即保存的逻辑，等待用户确认编辑
   }
 }
 
