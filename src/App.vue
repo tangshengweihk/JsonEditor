@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
 
+const defaultScenes = ['场景1', '场景2', '场景3', '场景4']
 const scenes = ref<string[]>([])
 const activeScene = ref('')
 const isSceneEditMode = ref(false)
@@ -14,9 +15,21 @@ const newDataValue = ref('')
 
 // 添加预设值相关的状态
 const presets = ref<Record<string, Record<string, string[]>>>({})
+const defaultPresets = {
+  "场景1": {},
+  "场景2": {},
+  "场景3": {},
+  "场景4": {}
+}
 
 // 添加临时存储编辑数据的变量
 const tempEditData = ref<Record<string, string>>({})
+
+// 添加数据文件夹路径
+const dataDir = ref('')
+
+// 添加文件输入框的ref
+const fileInput = ref<HTMLInputElement | null>(null)
 
 // 修改对 activeScene 的监听
 watch(activeScene, (newScene, oldScene) => {
@@ -69,6 +82,12 @@ const cancelDataEdit = () => {
 
 // 修改添加数据的方法
 const addData = () => {
+  // 检查键名是否为空
+  if (!newDataKey.value.trim()) {
+    alert('请输入有效的名称')
+    return
+  }
+  
   if (newDataKey.value && newDataValue.value) {
     // 检查键名是否已存在
     if (tempEditData.value && tempEditData.value[newDataKey.value]) {
@@ -156,16 +175,36 @@ const handleSceneNameChange = async (oldName: string, newName: string) => {
   
   const index = scenes.value.indexOf(oldName)
   if (index !== -1) {
+    // 更新场景列表
     scenes.value[index] = newName
-    // 更新场景数据的键名
+
+    // 更新场景数据
     const newData = { ...sceneData.value }
     newData[newName] = sceneData.value[oldName]
     delete newData[oldName]
     sceneData.value = newData
     
+    // 更新预设数据
+    const newPresets = { ...presets.value }
+    newPresets[newName] = presets.value[oldName] || {}
+    delete newPresets[oldName]
+    presets.value = newPresets
+
     if (activeScene.value === oldName) {
       activeScene.value = newName
     }
+
+    // 保存所有更改
+    await Promise.all([
+      saveToFile(),
+      fetch('/api/presets', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(presets.value)
+      })
+    ])
   }
 }
 
@@ -204,7 +243,11 @@ const saveToFile = async () => {
     sceneData.value = fullData
   } catch (error) {
     console.error('保存失败:', error)
-    throw error // 向上传递错误
+    // 如果加载失败，至少确保有默认场景
+    if (!scenes.value.length) {
+      scenes.value = [...defaultScenes]
+      sceneData.value = {}
+    }
   }
 }
 
@@ -218,7 +261,6 @@ watch([isSceneEditMode, isDataEditMode], async ([newSceneMode, newDataMode], [ol
   if (!newSceneMode && oldSceneMode) {
     // 退出场景编辑模式时不做任何操作
     // 保存或取消的逻辑由按钮事件处理
-    console.log('退出场景编辑模式')
   }
   
   if (!newDataMode && oldDataMode) {
@@ -226,8 +268,20 @@ watch([isSceneEditMode, isDataEditMode], async ([newSceneMode, newDataMode], [ol
   }
 })
 
+// 添加判断是否为默认场景的方法
+const isDefaultScene = (scene: string) => {
+  const index = scenes.value.indexOf(scene)
+  return index >= 0 && index < 4  // 前4个场景都是默认场景
+}
+
 // 修改确认删除场景的方法
 const confirmDelete = async (scene: string) => {
+  // 不允许删除默认场景
+  if (isDefaultScene(scene)) {
+    alert('默认场景不能删除')
+    return
+  }
+
   const index = scenes.value.indexOf(scene)
   if (index !== -1) {
     scenes.value.splice(index, 1)
@@ -258,53 +312,14 @@ const confirmDelete = async (scene: string) => {
   }
 }
 
-// 加载数据
-const loadSceneData = async () => {
-  try {
-    // 先加载场景列表
-    const scenesResponse = await fetch('/api/scenes').catch(() => null)
-    if (!scenesResponse) {
-      throw new Error('加载场景列表失败')
-    }
-    const scenesData = await scenesResponse.json()
-    scenes.value = scenesData.scenes || []
-
-    // 再加载场景数据
-    const dataResponse = await fetch('/api/data').catch(() => null)
-    if (!dataResponse) {
-      throw new Error('加载场景数据失败')
-    }
-    const data = await dataResponse.json()
-    
-    // 确保每个场景都有对应的数据对象
-    const fullData: Record<string, any> = {}
-    scenes.value.forEach(scene => {
-      fullData[scene] = data[scene] || {}
-    })
-    
-    sceneData.value = fullData
-  } catch (error) {
-    console.error('加载数据失败:', error)
-  }
-}
-
-// 添加默认场景方法
-const addDefaultScene = () => {
-  let newSceneName = `新场景${scenes.value.length + 1}`
-  
-  // 确保场景名称唯一
-  let counter = scenes.value.length + 1
-  while (scenes.value.includes(newSceneName)) {
-    counter++
-    newSceneName = `新场景${counter}`
-  }
-  
-  scenes.value.push(newSceneName)
-  sceneData.value[newSceneName] = {}
-}
-
 // 修改场景删除方法
 const deleteScene = async (sceneName: string) => {
+  // 不允许删除默认场景
+  if (isDefaultScene(sceneName)) {
+    alert('默认场景不能删除')
+    return
+  }
+
   if (confirm(`确定要删除场景 "${sceneName}" 吗？`)) {
     const index = scenes.value.indexOf(sceneName)
     if (index > -1) {
@@ -318,7 +333,105 @@ const deleteScene = async (sceneName: string) => {
   }
 }
 
-// 添加 watch 来确保不会同时进入两种编辑模式
+// 修改恢复默认场景的方法
+const resetToDefaultScenesNew = async () => {
+  if (confirm('确定要恢复到默认场景吗？这将删除所有自定义场景和预设值。')) {
+    // 重置场景列表
+    scenes.value = [...defaultScenes]
+    
+    // 清空所有场景数据
+    sceneData.value = {}
+    defaultScenes.forEach(scene => {
+      sceneData.value[scene] = {}
+    })
+    
+    // 设置激活场景
+    activeScene.value = scenes.value[0]
+    
+    // 完全重置预设值为默认值
+    presets.value = defaultScenes.reduce((acc, scene) => {
+      acc[scene] = {}  // 确保每个场景的预设是一个空对象
+      return acc
+    }, {} as Record<string, Record<string, string[]>>)
+    
+    // 保存到服务器
+    await Promise.all([
+      saveToFile(),
+      fetch('/api/presets', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(presets.value)
+      })
+    ])
+  }
+}
+
+// 修改加载数据方法
+const loadSceneData = async () => {
+  if (!dataDir.value) return
+
+  try {
+    // 加载场景列表
+    const scenesResponse = await fetch('/api/scenes')
+    if (!scenesResponse.ok) {
+      throw new Error('加载场景列表失败')
+    }
+    const scenesData = await scenesResponse.json()
+    scenes.value = scenesData.scenes || []
+    
+    // 如果有场景，选择第一个场景
+    if (scenes.value.length > 0) {
+      activeScene.value = scenes.value[0]
+    }
+
+    // 加载场景数据
+    const dataResponse = await fetch('/api/data')
+    if (!dataResponse.ok) {
+      throw new Error('加载场景数据失败')
+    }
+    const data = await dataResponse.json()
+    sceneData.value = data || {}
+    
+    // 加载预设值数据
+    const presetsResponse = await fetch('/api/presets')
+    if (!presetsResponse.ok) {
+      throw new Error('加载预设值失败')
+    }
+    const presetsData = await presetsResponse.json()
+    presets.value = presetsData || defaultPresets
+    
+    // 如果是编辑模式，初始化临时数据
+    if (isDataEditMode.value) {
+      const currentSceneData = sceneData.value[activeScene.value] || {}
+      tempEditData.value = JSON.parse(JSON.stringify(currentSceneData))
+    }
+  } catch (error) {
+    console.error('加载数据失败:', error)
+    alert('加载数据失败: ' + error.message)
+  }
+}
+
+// 添加默认场景方法
+const addDefaultScene = () => {
+  let sceneNumber = 5
+  // 找到当前最大的场景编号
+  scenes.value.forEach(scene => {
+    if (scene.startsWith('场景')) {
+      const num = parseInt(scene.replace('场景', ''))
+      if (!isNaN(num) && num >= sceneNumber) {
+        sceneNumber = num + 1
+      }
+    }
+  })
+  
+  const newSceneName = `场景${sceneNumber}`
+  scenes.value.push(newSceneName)
+  sceneData.value[newSceneName] = {}
+}
+
+// 修改 watch 来确保不会同时进入两种编辑模式
 watch(isSceneEditMode, (newValue) => {
   if (newValue) {
     isDataEditMode.value = false
@@ -362,19 +475,61 @@ const loadPresets = async () => {
   try {
     const response = await fetch('/api/presets')
     const data = await response.json()
-    // 直接使用获取到的数据，因为我们已经修改了数据结构为按场景存储
-    presets.value = data || {}
+    presets.value = data || defaultPresets
   } catch (error) {
-    console.error('加载预设值失败:', error)
-    // 初始化为空对象
-    presets.value = {}
+    // 如果加载失败，使用默认预设值
+    presets.value = defaultPresets
   }
 }
 
-// 在组件挂载时加载预设值
-onMounted(() => {
-  loadSceneData()
-  loadPresets()
+// 在组件挂载时获取当前选择的目录
+onMounted(async () => {
+  try {
+    const response = await fetch('/api/current-dir')
+    const data = await response.json()
+    if (data.dir) {
+      dataDir.value = data.dir
+      await loadSceneData() // 这个函数现在会加载所有必要的数据
+    }
+  } catch (error) {
+    console.error('获取当前目录失败:', error)
+  }
+})
+
+// 选择数据文件夹
+const selectDataDir = async () => {
+  try {
+    const response = await fetch('/api/select-folder')
+    if (!response.ok) {
+      const error = await response.json()
+      throw new Error(error.error || '选择文件夹失败')
+    }
+    
+    const data = await response.json()
+    if (data.success) {
+      dataDir.value = data.dir
+      await loadSceneData() // 使用统一的数据加载函数
+    }
+  } catch (error) {
+    console.error('选择目录失败:', error)
+    alert(error.message)
+  }
+}
+
+// 添加错误处理
+window.addEventListener('unhandledrejection', event => {
+  // 忽略 Chrome 扩展相关的错误
+  if (event.reason?.message?.includes('message port closed')) {
+    event.preventDefault()
+  }
+})
+
+// 添加错误处理
+window.addEventListener('error', event => {
+  // 忽略 Chrome 扩展相关的错误
+  if (event.error?.message?.includes('message port closed')) {
+    event.preventDefault()
+  }
 })
 
 const showPresetDialog = ref(false)
@@ -436,29 +591,27 @@ const savePresets = async () => {
 const cancelPresets = () => {
   showPresetDialog.value = false
 }
-
-// 添加错误处理
-window.addEventListener('unhandledrejection', event => {
-  // 忽略 Chrome 扩展相关的错误
-  if (event.reason?.message?.includes('message port closed')) {
-    event.preventDefault()
-  }
-})
-
-// 添加错误处理
-window.addEventListener('error', event => {
-  // 忽略 Chrome 扩展相关的错误
-  if (event.error?.message?.includes('message port closed')) {
-    event.preventDefault()
-  }
-})
 </script>
 
 <template>
   <div class="container">
     <div class="header">
       <h1 class="title">Json编辑器</h1>
-      <div class="edit-buttons">
+      <div class="data-dir-section">
+        <div class="dir-display">
+          <span v-if="!dataDir" class="placeholder">未选择文件夹</span>
+          <span v-else class="selected-dir">{{ dataDir }}</span>
+        </div>
+        <button @click="selectDataDir" class="select-dir-btn">浏览...</button>
+      </div>
+      <!-- 只在选择了文件夹后显示这些按钮 -->
+      <div v-if="dataDir" class="edit-buttons">
+        <button 
+          @click="resetToDefaultScenesNew" 
+          class="edit-mode-btn reset-btn"
+        >
+          恢复默认场景
+        </button>
         <!-- 场景编辑按钮组 -->
         <template v-if="!isDataEditMode">
           <template v-if="isSceneEditMode">
@@ -502,8 +655,9 @@ window.addEventListener('error', event => {
           </template>
           <button 
             v-else
-            @click="enterDataEditMode"
+            @click="enterDataEditMode" 
             class="edit-mode-btn"
+            :disabled="!activeScene"
           >
             数据编辑
           </button>
@@ -511,7 +665,8 @@ window.addEventListener('error', event => {
       </div>
     </div>
 
-    <div class="main-content">
+    <!-- 只在选择了文件夹后显示主要内容 -->
+    <div v-if="dataDir" class="main-content">
       <div class="scene-container">
         <div 
           v-for="scene in scenes" 
@@ -534,13 +689,18 @@ window.addEventListener('error', event => {
           </div>
           
           <button 
-            v-if="isSceneEditMode"
+            v-if="isSceneEditMode && !isDefaultScene(scene)"
             @click.stop="confirmDelete(scene)"
             class="delete-btn"
             title="删除场景"
           >
             -
           </button>
+          <!-- 为默认场景添加一个占位div，保持布局一致 -->
+          <div 
+            v-if="isSceneEditMode && isDefaultScene(scene)"
+            class="delete-btn-placeholder"
+          ></div>
         </div>
 
         <button 
@@ -560,7 +720,7 @@ window.addEventListener('error', event => {
         
         <div class="data-content">
           <div v-if="!isDataEditMode" class="data-view">
-            <div v-for="(value, key) in sceneData[activeScene]" :key="key" class="data-item">
+            <div v-for="(value, key) in (sceneData[activeScene] || {})" :key="key" class="data-item">
               <span class="data-label">{{ key }}:</span>
               <span class="data-value">{{ value }}</span>
             </div>
@@ -578,7 +738,6 @@ window.addEventListener('error', event => {
                 v-model="tempEditData[key]" 
                 class="data-select"
               >
-                <!-- 修改预设值的访问方式，确保正确访问场景下的预设 -->
                 <option 
                   v-for="preset in (presets[activeScene]?.[key] || [])" 
                   :key="preset" 
@@ -643,6 +802,11 @@ window.addEventListener('error', event => {
         </div>
       </div>
     </div>
+    
+    <!-- 如果没有选择文件夹，显示提示信息 -->
+    <div v-else class="no-folder-message">
+      请先选择数据文件夹
+    </div>
   </div>
 </template>
 
@@ -691,11 +855,11 @@ window.addEventListener('error', event => {
 }
 
 .save-btn {
-  background: #4CAF50;
+  background: #1a73e8;
 }
 
 .save-btn:hover {
-  background: #45a049;
+  background: #1557b0;
 }
 
 .cancel-btn {
@@ -704,6 +868,14 @@ window.addEventListener('error', event => {
 
 .cancel-btn:hover {
   background: #da190b;
+}
+
+.reset-btn {
+  background: #6c757d;
+}
+
+.reset-btn:hover {
+  background: #5a6268;
 }
 
 .main-content {
@@ -744,7 +916,7 @@ window.addEventListener('error', event => {
 }
 
 .scene-item.active {
-  background: #4CAF50;
+  background: #1a73e8;
 }
 
 .scene-name,
@@ -782,7 +954,7 @@ window.addEventListener('error', event => {
 .add-btn {
   width: 40px;
   height: 40px;
-  background: #4CAF50;
+  background: #1a73e8;
   border: none;
   border-radius: 6px;
   color: #fff;
@@ -792,6 +964,10 @@ window.addEventListener('error', event => {
   justify-content: center;
   cursor: pointer;
   transition: all 0.2s ease;
+}
+
+.add-btn:hover {
+  background: #1557b0;
 }
 
 .data-container {
@@ -875,11 +1051,15 @@ window.addEventListener('error', event => {
 
 .add-data-btn {
   padding: 4px 8px;
-  background: #4CAF50;
+  background: #1a73e8;
   border: none;
   border-radius: 4px;
   color: #fff;
   cursor: pointer;
+}
+
+.add-data-btn:hover {
+  background: #1557b0;
 }
 
 .no-data {
@@ -1000,5 +1180,76 @@ option {
   background: rgba(0, 0, 0, 0.3);
   cursor: not-allowed;
 }
-</style>
 
+.delete-btn-placeholder {
+  position: absolute;
+  right: -36px;
+  width: 28px;
+  height: 28px;
+}
+
+.data-dir-section {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  margin: 0 20px;
+  min-width: 200px;
+}
+
+.dir-display {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #444;
+  border-radius: 4px;
+  background: #2a2a2a;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+}
+
+.placeholder {
+  color: #666;
+}
+
+.selected-dir {
+  color: #fff;
+  word-break: break-all;
+}
+
+.select-dir-btn {
+  white-space: nowrap;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  background: #1976d2;
+  color: white;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.select-dir-btn:hover {
+  background: #1557b0;
+}
+
+.select-dir-btn:disabled {
+  background: #666;
+  cursor: not-allowed;
+}
+
+.no-folder-message {
+  text-align: center;
+  padding: 40px;
+  color: #666;
+  font-size: 16px;
+}
+
+.edit-mode-btn.active {
+  background: #1a73e8;
+}
+
+.edit-mode-btn:disabled {
+  background: #666;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+</style>
